@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Mutex, RwLock},
-};
+use std::sync::Mutex;
 
 use actix::{Actor, Addr, AsyncContext, Handler, StreamHandler};
 use actix_files::Files;
@@ -11,21 +8,24 @@ use actix_web::{
     App, HttpRequest, HttpServer,
 };
 use actix_web_actors::ws::{self, Message, ProtocolError, WebsocketContext};
+use bytestring::ByteString;
+
+type WaitingData = Data<Mutex<Option<Addr<WsHandler>>>>;
 
 #[main]
 async fn main() -> Result<(), std::io::Error> {
-    let global_data = Data::new(WsMap::default());
+    let global_data: WaitingData = WaitingData::new(Default::default());
     HttpServer::new(move || {
         App::new()
             .app_data(global_data.clone())
             .route(
                 "/websocket",
                 web::get().to(
-                    |req: HttpRequest, stream: Payload, data: Data<WsMap>| async move {
+                    |req: HttpRequest, stream: Payload, data: WaitingData| async move {
                         ws::start(
                             WsHandler {
-                                id: rand::random(),
-                                map: data,
+                                enemy: None,
+                                waiting: data,
                             },
                             &req,
                             stream,
@@ -42,52 +42,30 @@ async fn main() -> Result<(), std::io::Error> {
 }
 
 struct WsHandler {
-    id: u128,
-    map: Data<WsMap>,
+    enemy: Option<Addr<WsHandler>>,
+    waiting: WaitingData,
 }
 
 impl Actor for WsHandler {
     type Context = WebsocketContext<Self>;
     fn started(&mut self, ctx: &mut Self::Context) {
-        let mut waiting = self.map.waiting.lock().unwrap();
-        if let Some(enemy_id) = *waiting {
-            *waiting = None;
-            // drop(waiting);
-            let mut map = self.map.global_map.write().unwrap();
-            let enemy = match map.remove(&enemy_id) {
-                Some(e) => e,
-                None => return, // should this panic?
-            };
-            map.insert(self.id, enemy.clone());
-            map.insert(enemy_id, ctx.address());
-            // drop(map);
-            enemy.do_send(Mess::White);
+        let mut waiting = self.waiting.lock().unwrap();
+        if let Some(enemy) = waiting.take() {
+            enemy.do_send(Mess::Enemy(ctx.address()));
+            self.enemy = Some(enemy);
             ctx.text("black");
         } else {
-            *waiting = Some(self.id);
-            // drop(waiting);
-            self.map
-                .global_map
-                .write()
-                .unwrap()
-                .insert(self.id, ctx.address());
+            *waiting = Some(ctx.address());
         }
     }
-    fn stopped(&mut self, _: &mut Self::Context) {
-        let mut waiting = self.map.waiting.lock().unwrap();
-
-        if matches!(*waiting, Some(id) if id == self.id) {
+    fn stopped(&mut self, ctx: &mut Self::Context) {
+        let mut waiting = self.waiting.lock().unwrap();
+        if matches!(*waiting, Some(ref enemy) if *enemy == ctx.address()) {
             *waiting = None;
         }
-        drop(waiting);
-
-        let mut map = self.map.global_map.write().unwrap();
-        let me_or_other = match map.remove(&self.id) {
-            Some(h) => h,
-            None => return,
-        };
-        drop(map);
-        me_or_other.do_send(Mess::Close);
+        if let Some(ref enemy) = self.enemy {
+            enemy.do_send(Mess::Close);
+        }
     }
 }
 
@@ -95,10 +73,13 @@ impl StreamHandler<Result<Message, ProtocolError>> for WsHandler {
     fn handle(&mut self, item: Result<Message, ProtocolError>, _: &mut Self::Context) {
         let message = match item {
             Ok(it) => it,
-            Err(_) => return,
+            Err(e) => {
+                eprintln!("{}", e);
+                return;
+            }
         };
-        if let Message::Text(s) = message {
-            self.map.global_map.read().unwrap()[&self.id].do_send(Mess::Go(s.to_string()));
+        if let (Message::Text(s), Some(ref enemy)) = (message, &self.enemy) {
+            enemy.do_send(Mess::Go(s));
         }
     }
 }
@@ -108,24 +89,26 @@ impl Handler<Mess> for WsHandler {
 
     fn handle(&mut self, msg: Mess, ctx: &mut Self::Context) -> Self::Result {
         match msg {
-            Mess::White => ctx.text("white"),
+            Mess::Enemy(enemy) => {
+                if self.enemy.is_some() {
+                    eprintln!("one receive a match while having matched");
+                    return;
+                }
+                self.enemy = Some(enemy);
+                ctx.text("white");
+            }
             Mess::Close => ctx.close(None),
             Mess::Go(s) => ctx.text(s),
         }
     }
 }
 
-#[derive(Default)]
-struct WsMap {
-    global_map: RwLock<HashMap<u128, Addr<WsHandler>>>,
-    waiting: Mutex<Option<u128>>,
+enum Mess {
+    Enemy(Addr<WsHandler>),
+    Close,
+    Go(ByteString),
 }
 
-#[derive(actix::Message)]
-#[rtype(result = "()")]
-enum Mess {
-    //Black,
-    White,
-    Close,
-    Go(String),
+impl actix::Message for Mess {
+    type Result = ();
 }
