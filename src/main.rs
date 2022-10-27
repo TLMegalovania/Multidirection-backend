@@ -36,7 +36,7 @@ async fn main() -> Result<(), std::io::Error> {
             .service(Files::new("/", "./static/").index_file("index.html"))
     })
     .bind(("0.0.0.0", 8080))?
-    .bind(("[::]", 8080))?
+    //.bind(("[::]", 8080))?
     .run()
     .await
 }
