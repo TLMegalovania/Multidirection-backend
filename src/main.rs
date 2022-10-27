@@ -7,7 +7,9 @@ use actix_web::{
     web::{self, Data, Payload},
     App, HttpRequest, HttpServer,
 };
-use actix_web_actors::ws::{self, Message, ProtocolError, WebsocketContext};
+use actix_web_actors::ws::{
+    self, CloseCode, CloseReason, Message, ProtocolError, WebsocketContext,
+};
 use bytestring::ByteString;
 
 type WaitingData = Data<Mutex<Option<Addr<WsHandler>>>>;
@@ -97,7 +99,10 @@ impl Handler<Mess> for WsHandler {
                 self.enemy = Some(enemy);
                 ctx.text("white");
             }
-            Mess::Close => ctx.close(None),
+            Mess::Close => ctx.close(Some(CloseReason {
+                code: CloseCode::Normal,
+                description: None,
+            })),
             Mess::Go(s) => ctx.text(s),
         }
     }
