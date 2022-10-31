@@ -1,4 +1,7 @@
-use std::sync::Mutex;
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    sync::Mutex,
+};
 
 use actix::{Actor, Addr, AsyncContext, Handler, StreamHandler};
 use actix_files::Files;
@@ -37,8 +40,8 @@ async fn main() -> Result<(), std::io::Error> {
             )
             .service(Files::new("/", "./static/").index_file("index.html"))
     })
-    .bind(("0.0.0.0", 8080))?
-    .bind(("[::]", 8080))?
+    .bind((Ipv4Addr::UNSPECIFIED, 8080))?
+    .bind((Ipv6Addr::UNSPECIFIED, 8080))?
     .run()
     .await
 }
